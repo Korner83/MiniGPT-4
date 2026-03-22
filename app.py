@@ -490,11 +490,16 @@ def _run_gradio(chat, base_dir):
 
     def gradio_chat(user_message, chatbot, chat_state, gr_img, img_list, upload_flag, replace_flag, temperature):
         """Combined ask + stream + visualize in one generator for Gradio 4 compatibility."""
-        # --- ASK phase ---
+        # --- VALIDATE phase ---
         if len(user_message) == 0:
-            yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
+            yield 'Input should not be empty!', chatbot, chat_state, img_list, upload_flag, replace_flag
             return
 
+        if gr_img is None and not img_list:
+            yield 'Please upload an image first!', chatbot, chat_state, img_list, upload_flag, replace_flag
+            return
+
+        # --- ASK phase ---
         if isinstance(gr_img, dict):
             gr_img, mask = gr_img.get('image'), gr_img.get('mask')
         else:
@@ -531,24 +536,41 @@ def _run_gradio(chat, base_dir):
         yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
 
         # --- STREAM phase ---
-        if len(img_list) > 0:
-            if not isinstance(img_list[0], torch.Tensor):
-                chat.encode_img(img_list)
+        try:
+            if len(img_list) > 0:
+                if not isinstance(img_list[0], torch.Tensor):
+                    chatbot[-1][1] = "Encoding image..."
+                    yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
+                    chat.encode_img(img_list)
+                    chatbot[-1][1] = None
 
-        streamer = chat.stream_answer(conv=chat_state,
-                                      img_list=img_list,
-                                      temperature=temperature,
-                                      max_new_tokens=500,
-                                      max_length=2000)
-        output = ''
-        for new_output in streamer:
-            output += new_output
-            chatbot[-1][1] = output
+            streamer = chat.stream_answer(conv=chat_state,
+                                          img_list=img_list,
+                                          temperature=temperature,
+                                          max_new_tokens=500,
+                                          max_length=2000)
+            output = ''
+            for new_output in streamer:
+                output += new_output
+                chatbot[-1][1] = output
+                yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
+
+            if not output.strip():
+                chatbot[-1][1] = "(No response generated. Try rephrasing your question.)"
+
+            chat_state.messages[-1][1] = '</s>'
+        except torch.cuda.OutOfMemoryError:
+            chatbot[-1][1] = "Error: GPU out of memory. Please restart the application."
             yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
-        chat_state.messages[-1][1] = '</s>'
+            return
+        except Exception as e:
+            chatbot[-1][1] = f"Error during generation: {str(e)}"
+            print(f"[ERROR] Inference failed: {e}", flush=True)
+            yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
+            return
 
         # --- VISUALIZE phase ---
-        if chatbot[-1][1]:
+        if chatbot[-1][1] and not chatbot[-1][1].startswith("Error"):
             unescaped = reverse_escape(chatbot[-1][1])
             visual_img, generation_color = visualize_all_bbox_together(gr_img, unescaped)
             if visual_img is not None:
