@@ -68,7 +68,7 @@ def _print_startup_info():
     print(f"  CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         print(f"  VRAM: {vram_gb:.1f} GB")
     print(f"  Frozen exe: {getattr(sys, 'frozen', False)}")
     print("=" * 60)
@@ -166,13 +166,20 @@ def main():
         sys.exit(1)
 
     try:
+        import time as _time
+        _t0 = _time.time()
         model_cls = registry.get_model_class(model_config.arch)
         print(f"  Loading model: {model_config.arch}")
-        model = model_cls.from_config(model_config).to(device)
+        print(f"  Step 1/3: Loading vision encoder (EVA-CLIP-G)...")
+        model = model_cls.from_config(model_config)
+        print(f"  Step 2/3: Moving model to {device}...")
+        model = model.to(device)
         model = model.eval()
+        _elapsed = _time.time() - _t0
+        print(f"  Step 3/3: Model ready! (took {_elapsed:.0f}s)")
     except torch.cuda.OutOfMemoryError:
         print(f"\nERROR: Not enough GPU memory to load the model!")
-        print(f"  Available VRAM: {torch.cuda.get_device_properties(args.gpu_id).total_mem / (1024**3):.1f} GB")
+        print(f"  Available VRAM: {torch.cuda.get_device_properties(args.gpu_id).total_memory / (1024**3):.1f} GB")
         print("  Try enabling low_resource mode in the config (uses 8-bit quantization).")
         input("\nPress Enter to exit...")
         sys.exit(1)
@@ -467,7 +474,7 @@ def _run_gradio(chat, base_dir):
             chat_state.messages = []
         if img_list is not None:
             img_list = []
-        return None, gr.update(value=None, interactive=True), gr.update(placeholder='Upload your image and chat', interactive=True), chat_state, img_list
+        return None, None, gr.Textbox(value='', placeholder='Upload your image and chat', interactive=True), chat_state, img_list
 
     def image_upload_trigger(upload_flag, replace_flag, img_list):
         upload_flag = 1
@@ -481,14 +488,15 @@ def _run_gradio(chat, base_dir):
             replace_flag = 1
         return upload_flag, replace_flag
 
-    def gradio_ask(user_message, chatbot, chat_state, gr_img, img_list, upload_flag, replace_flag):
+    def gradio_chat(user_message, chatbot, chat_state, gr_img, img_list, upload_flag, replace_flag, temperature):
+        """Combined ask + stream + visualize in one generator for Gradio 4 compatibility."""
+        # --- ASK phase ---
         if len(user_message) == 0:
-            text_box_show = 'Input should not be empty!'
-        else:
-            text_box_show = ''
+            yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
+            return
 
         if isinstance(gr_img, dict):
-            gr_img, mask = gr_img['image'], gr_img['mask']
+            gr_img, mask = gr_img.get('image'), gr_img.get('mask')
         else:
             mask = None
 
@@ -507,7 +515,7 @@ def _run_gradio(chat, base_dir):
                 replace_flag = 0
                 chatbot = []
             img_list = []
-            llm_message = chat.upload_img(gr_img, chat_state, img_list)
+            chat.upload_img(gr_img, chat_state, img_list)
             upload_flag = 0
 
         chat.ask(user_message, chat_state)
@@ -519,9 +527,10 @@ def _run_gradio(chat, base_dir):
                 file_path = save_tmp_img(visual_img)
                 chatbot = chatbot + [[(file_path,), None]]
 
-        return text_box_show, chatbot, chat_state, img_list, upload_flag, replace_flag
+        # Show user message immediately
+        yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
 
-    def gradio_stream_answer(chatbot, chat_state, img_list, temperature):
+        # --- STREAM phase ---
         if len(img_list) > 0:
             if not isinstance(img_list[0], torch.Tensor):
                 chat.encode_img(img_list)
@@ -533,24 +542,22 @@ def _run_gradio(chat, base_dir):
                                       max_length=2000)
         output = ''
         for new_output in streamer:
-            escapped = escape_markdown(new_output)
-            output += escapped
+            output += new_output
             chatbot[-1][1] = output
-            yield chatbot, chat_state
+            yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
         chat_state.messages[-1][1] = '</s>'
-        return chatbot, chat_state
 
-    def gradio_visualize(chatbot, gr_img):
-        if isinstance(gr_img, dict):
-            gr_img, mask = gr_img['image'], gr_img['mask']
-        unescaped = reverse_escape(chatbot[-1][1])
-        visual_img, generation_color = visualize_all_bbox_together(gr_img, unescaped)
-        if visual_img is not None:
-            if len(generation_color):
-                chatbot[-1][1] = generation_color
-            file_path = save_tmp_img(visual_img)
-            chatbot = chatbot + [[None, (file_path,)]]
-        return chatbot
+        # --- VISUALIZE phase ---
+        if chatbot[-1][1]:
+            unescaped = reverse_escape(chatbot[-1][1])
+            visual_img, generation_color = visualize_all_bbox_together(gr_img, unescaped)
+            if visual_img is not None:
+                if len(generation_color):
+                    chatbot[-1][1] = generation_color
+                file_path = save_tmp_img(visual_img)
+                chatbot = chatbot + [[None, (file_path,)]]
+
+        yield '', chatbot, chat_state, img_list, upload_flag, replace_flag
 
     def gradio_taskselect(idx):
         prompt_list = [
@@ -591,8 +598,8 @@ For Abilities Involving Visual Grounding:
         gr.Markdown(article)
 
         with gr.Row():
-            with gr.Column(scale=0.5):
-                image = gr.Image(type="pil", tool='sketch', brush_radius=20)
+            with gr.Column(scale=1):
+                image = gr.Image(type="pil")
                 temperature = gr.Slider(minimum=0.1, maximum=1.5, value=0.6, step=0.1, interactive=True, label="Temperature")
                 clear = gr.Button("Restart")
                 gr.Markdown(introduction)
@@ -634,27 +641,15 @@ For Abilities Involving Visual Grounding:
 
         dataset.click(gradio_taskselect, inputs=[dataset], outputs=[text_input, task_inst], show_progress="hidden", postprocess=False, queue=False)
 
-        text_input.submit(
-            gradio_ask, [text_input, chatbot, chat_state, image, img_list, upload_flag, replace_flag],
-            [text_input, chatbot, chat_state, img_list, upload_flag, replace_flag], queue=False
-        ).success(
-            gradio_stream_answer, [chatbot, chat_state, img_list, temperature], [chatbot, chat_state]
-        ).success(
-            gradio_visualize, [chatbot, image], [chatbot], queue=False
-        )
+        chat_inputs = [text_input, chatbot, chat_state, image, img_list, upload_flag, replace_flag, temperature]
+        chat_outputs = [text_input, chatbot, chat_state, img_list, upload_flag, replace_flag]
 
-        send.click(
-            gradio_ask, [text_input, chatbot, chat_state, image, img_list, upload_flag, replace_flag],
-            [text_input, chatbot, chat_state, img_list, upload_flag, replace_flag], queue=False
-        ).success(
-            gradio_stream_answer, [chatbot, chat_state, img_list, temperature], [chatbot, chat_state]
-        ).success(
-            gradio_visualize, [chatbot, image], [chatbot], queue=False
-        )
+        text_input.submit(gradio_chat, chat_inputs, chat_outputs)
+        send.click(gradio_chat, chat_inputs, chat_outputs)
 
         clear.click(gradio_reset, [chat_state, img_list], [chatbot, image, text_input, chat_state, img_list], queue=False)
 
-    demo.launch(share=False, enable_queue=True)
+    demo.launch(share=False)
 
 
 if __name__ == "__main__":

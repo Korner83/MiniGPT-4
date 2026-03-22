@@ -5,7 +5,7 @@ model:
   end_sym: "</s>"
   low_resource: False
   prompt_template: '[INST] {} [/INST]'
-  ckpt: "models/minigptv2_checkpoint.pth"
+  ckpt: "model/minigptv2_checkpoint.pth"
   lora_r: 64
   lora_alpha: 16
 
