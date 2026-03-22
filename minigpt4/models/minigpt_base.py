@@ -63,11 +63,12 @@ class MiniGPTBase(BaseModel):
         self.ln_vision.to("cpu")
         self.ln_vision.float()
         self.visual_encoder.to("cpu")
-        self.visual_encoder.float()
+        self.visual_encoder.float()    
 
     def get_context_emb(self, prompt, img_list):
         device = img_list[0].device
-        prompt_segs = prompt.split('<ImageHere>')
+        prompt_segs = prompt.split('<ImageHere>')        
+
         assert len(prompt_segs) == len(img_list) + 1, "Unmatched numbers of image placeholders and images."
         seg_tokens = [
             self.llama_tokenizer(
@@ -77,6 +78,10 @@ class MiniGPTBase(BaseModel):
         seg_embs = [self.embed_tokens(seg_t) for seg_t in seg_tokens]
 
         mixed_embs = [emb for pair in zip(seg_embs[:-1], img_list) for emb in pair] + [seg_embs[-1]]
+
+        #for i, emb in enumerate(mixed_embs):
+        #    print(f"Tensor {i} shape: {emb.shape}")
+        #print("Mixed embeddings shapes:", [emb.shape for emb in mixed_embs])
         mixed_embs = torch.cat(mixed_embs, dim=1)
         return mixed_embs
 

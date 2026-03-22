@@ -136,12 +136,13 @@ CONV_VISION_minigptv2 = Conversation(
     sep="",
 )
 
-class Chat:
+class Chat:  
+
     def __init__(self, model, vis_processor, device='cuda:0', stopping_criteria=None):
         self.device = device
         self.model = model
         self.vis_processor = vis_processor
-
+        
         if stopping_criteria is not None:
             self.stopping_criteria = stopping_criteria
         else:
@@ -155,8 +156,8 @@ class Chat:
         else:
             conv.append_message(conv.roles[0], text)
 
-    def answer_prepare(self, conv, img_list, max_new_tokens=300, num_beams=1, min_length=1, top_p=0.9,
-                       repetition_penalty=1.05, length_penalty=1, temperature=1.0, max_length=2000):
+    def answer_prepare(self, conv, img_list, max_new_tokens=300, num_beams=1, min_length=1, top_p=0.85,
+                       repetition_penalty=1.2, length_penalty=1, temperature=1.0, max_length=2000):
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
         embs = self.model.get_context_emb(prompt, img_list)

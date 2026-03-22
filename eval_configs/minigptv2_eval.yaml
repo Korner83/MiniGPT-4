@@ -3,9 +3,9 @@ model:
   model_type: pretrain
   max_txt_len: 500
   end_sym: "</s>"
-  low_resource: True
+  low_resource: False
   prompt_template: '[INST] {} [/INST]'
-  ckpt: "please set this value to the path of pretrained checkpoint"
+  ckpt: "models/minigptv2_checkpoint.pth"
   lora_r: 64
   lora_alpha: 16
 
